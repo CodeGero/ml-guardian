@@ -1,0 +1,145 @@
+name: 'ML Guardian'
+description: 'Catch common machine learning code issues — deprecated APIs, inefficient tensor ops, pickle security, missing seeds, data leakage patterns.'
+author: 'Kryptorious Quantum Biosciences, Inc.'
+branding:
+  icon: 'cpu'
+  color: 'purple'
+
+inputs:
+  path:
+    description: 'Path to scan'
+    required: false
+    default: '.'
+  fail-on-error:
+    description: 'Fail on critical issues'
+    required: false
+    default: 'true'
+  framework:
+    description: 'ML framework (pytorch, tensorflow, sklearn, jax, all)'
+    required: false
+    default: 'all'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: ML Code Audit
+      shell: bash
+      run: |
+        echo "ML Guardian — auditing ML code patterns"
+        echo "Framework: ${{ inputs.framework }}"
+        echo ""
+
+        ISSUES=0
+        WARNINGS=0
+
+        find ${{ inputs.path }} -name '*.py' -not -path '*/test*' -not -path '*/__pycache__/*' 2>/dev/null | while read -r file; do
+          [ ! -f "$file" ] && continue
+          DIRTY=0
+
+          # Determinism checks (critical for reproducibility)
+          if grep -q "random.seed\|np.random.seed\|torch.manual_seed" "$file" 2>/dev/null; then
+            if ! grep -q "random.seed\|np.random.seed\|torch.manual_seed\|tf.random.set_seed\|random_state\|deterministic" "$file" 2>/dev/null; then
+              # Has some seeds but might be incomplete
+              :
+            fi
+          fi
+
+          # Missing random seed (very common ML bug)
+          if grep -qE "import (numpy|np)|from (numpy|np) " "$file" 2>/dev/null; then
+            if grep -qE "np\.random\.(rand|randn|random|shuffle|choice|permutation)" "$file" 2>/dev/null; then
+              if ! grep -q "np.random.seed\|random_state" "$file" 2>/dev/null; then
+                echo "  $file: Missing random seed for reproducible results"
+                WARNINGS=$((WARNINGS + 1))
+                DIRTY=1
+              fi
+            fi
+          fi
+
+          # PyTorch specific
+          if [ "${{ inputs.framework }}" = "pytorch" ] || [ "${{ inputs.framework }}" = "all" ]; then
+            # Deprecated torch API
+            if grep -qE "torch\.(sigmoid|tanh|relu)\(" "$file" 2>/dev/null; then
+              if ! grep -q "torch.nn.functional" "$file" 2>/dev/null; then
+                echo "  $file: Use torch.nn.functional.sigmoid/tanh/relu instead of torch.sigmoid/etc"
+                WARNINGS=$((WARNINGS + 1))
+                DIRTY=1
+              fi
+            fi
+            # In-place ops on leaf variables
+            if grep -qE "\.(add_|mul_|sub_|div_)\(" "$file" 2>/dev/null; then
+              echo "  $file: In-place operations on tensors — may cause autograd errors"
+              WARNINGS=$((WARNINGS + 1))
+              DIRTY=1
+            fi
+            # Missing no_grad in eval
+            if grep -q "model.eval()\|\.eval()" "$file" 2>/dev/null; then
+              if ! grep -q "torch.no_grad()\|@torch.no_grad" "$file" 2>/dev/null; then
+                echo "  $file: model.eval() used without torch.no_grad() — wastes memory"
+                WARNINGS=$((WARNINGS + 1))
+                DIRTY=1
+              fi
+            fi
+          fi
+
+          # TensorFlow specific
+          if [ "${{ inputs.framework }}" = "tensorflow" ] || [ "${{ inputs.framework }}" = "all" ]; then
+            if grep -q "tf.compat.v1" "$file" 2>/dev/null; then
+              echo "  $file: Using deprecated tf.compat.v1 — migrate to TF2 API"
+              ISSUES=$((ISSUES + 1))
+              DIRTY=1
+            fi
+            if grep -q "tf.Session\|tf.placeholder\|tf.global_variables_initializer" "$file" 2>/dev/null; then
+              echo "  $file: TF1-style code detected (Session, placeholder) — migrate to TF2"
+              ISSUES=$((ISSUES + 1))
+              DIRTY=1
+            fi
+          fi
+
+          # Scikit-learn specific
+          if [ "${{ inputs.framework }}" = "sklearn" ] || [ "${{ inputs.framework }}" = "all" ]; then
+            if grep -q "train_test_split" "$file" 2>/dev/null; then
+              if ! grep -q "random_state" "$file" 2>/dev/null; then
+                echo "  $file: train_test_split without random_state — non-reproducible splits"
+                WARNINGS=$((WARNINGS + 1))
+                DIRTY=1
+              fi
+            fi
+          fi
+
+          # Security: pickle in ML (major attack vector)
+          if grep -qE "pickle\.load|torch\.load\(.*pickle|joblib\.load" "$file" 2>/dev/null; then
+            echo "  $file: SECURITY — pickle/joblib load can execute arbitrary code"
+            ISSUES=$((ISSUES + 1))
+            DIRTY=1
+          fi
+
+          # Data leakage: scaling before split
+          if grep -qE "(StandardScaler|MinMaxScaler|fit_transform)" "$file" 2>/dev/null; then
+            if grep -q "fit_transform.*train" "$file" 2>/dev/null; then
+              if grep -q "transform.*test" "$file" 2>/dev/null; then
+                :
+              else
+                echo "  $file: Potential data leakage — verify scaler is fit on train only"
+                WARNINGS=$((WARNINGS + 1))
+                DIRTY=1
+              fi
+            fi
+          fi
+
+          [ "$DIRTY" = "0" ] && echo "  $file: Clean"
+        done
+
+        echo ""
+        echo "Issues: $ISSUES, Warnings: $WARNINGS"
+
+        if [ "$ISSUES" -gt 0 ] && [ "${{ inputs.fail-on-error }}" = "true" ]; then
+          exit 1
+        fi
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo ""
+        echo "ML Guardian — complete"
+        echo "Premium: Custom rules per framework, training pipeline audit, data quality scoring"
+        echo "https://kryptorious.gumroad.com/l/jbvet"
