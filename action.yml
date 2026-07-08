@@ -32,7 +32,7 @@ runs:
         ISSUES=0
         WARNINGS=0
 
-        find ${{ inputs.path }} -name '*.py' -not -path '*/test*' -not -path '*/__pycache__/*' 2>/dev/null | while read -r file; do
+        while read -r file; do
           [ ! -f "$file" ] && continue
           DIRTY=0
 
@@ -127,7 +127,7 @@ runs:
           fi
 
           [ "$DIRTY" = "0" ] && echo "  $file: Clean"
-        done
+        done < <(find ${{ inputs.path }} -name '*.py' -not -path '*/test*' -not -path '*/__pycache__/*' 2>/dev/null)
 
         echo ""
         echo "Issues: $ISSUES, Warnings: $WARNINGS"
